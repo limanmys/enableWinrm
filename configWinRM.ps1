@@ -1,3 +1,4 @@
+#!powershell
 #Requires -Version 3.0
 
 # Configure a Windows host for remote management with Ansible
@@ -57,6 +58,7 @@
 
 Param (
     [string]$SubjectName = $env:COMPUTERNAME,
+    [string]$Instance ,
     [int]$CertValidityDays = 1095,
     [switch]$SkipNetworkProfileCheck,
     $CreateSelfSignedCert = $true,
@@ -170,7 +172,7 @@ Function Enable-GlobalHttpFirewallAccess
 
     # try to find/enable the default rule first
     $add_rule = $false
-    $matching_rules = $fw.Rules | Where-Object  { $_.Name -eq "Windows Remote Management (HTTP-In)" }
+    $matching_rules = $fw.Rules | ? { $_.Name -eq "Windows Remote Management (HTTP-In)" }
     $rule = $null
     If ($matching_rules) {
         If ($matching_rules -isnot [Array]) {
@@ -180,7 +182,7 @@ Function Enable-GlobalHttpFirewallAccess
         Else {
             # try to find one with the All or Public profile first
             Write-Verbose "Found multiple existing HTTP firewall rules..."
-            $rule = $matching_rules | ForEach-Object { $_.Profiles -band 4 }[0]
+            $rule = $matching_rules | % { $_.Profiles -band 4 }[0]
 
             If (-not $rule -or $rule -is [Array]) {
                 Write-Verbose "Editing an arbitrary single HTTP firewall rule (multiple existed)"
@@ -203,7 +205,7 @@ Function Enable-GlobalHttpFirewallAccess
     $rule.LocalPorts = 5985
     $rule.RemotePorts = "*"
     $rule.LocalAddresses = "*"
-    $rule.RemoteAddresses = "*"
+    $rule.RemoteAddresses = $Instance
     $rule.Enabled = $true
     $rule.Direction = 1
     $rule.Action = 1
@@ -255,6 +257,11 @@ If ($PSVersionTable.PSVersion.Major -lt 3)
 {
     Write-Log "PowerShell version 3 or higher is required."
     Throw "PowerShell version 3 or higher is required."
+}
+
+# Check Instance
+if ($Instance -eq "") {
+	$Instance = "*"
 }
 
 # Find and start the WinRM service.
@@ -310,7 +317,7 @@ if ($token_value -ne 1) {
 
 # Make sure there is a SSL listener.
 $listeners = Get-ChildItem WSMan:\localhost\Listener
-If (!($listeners | Where-Object {$_.Keys -like "TRANSPORT=HTTPS"}))
+If (!($listeners | Where {$_.Keys -like "TRANSPORT=HTTPS"}))
 {
     # We cannot use New-SelfSignedCertificate on 2012R2 and earlier
     $thumbprint = New-LegacySelfSignedCert -SubjectName $SubjectName -ValidDays $CertValidityDays
@@ -394,7 +401,7 @@ Else
 If ($EnableCredSSP)
 {
     # Check for CredSSP authentication
-    $credsspAuthSetting = Get-ChildItem WSMan:\localhost\Service\Auth | Where-Object {$_.Name -eq "CredSSP"}
+    $credsspAuthSetting = Get-ChildItem WSMan:\localhost\Service\Auth | Where {$_.Name -eq "CredSSP"}
     If (($credsspAuthSetting.Value) -eq $false)
     {
         Write-Verbose "Enabling CredSSP auth support."
@@ -409,17 +416,17 @@ If ($GlobalHttpFirewallAccess) {
 
 # Configure firewall to allow WinRM HTTPS connections.
 $fwtest1 = netsh advfirewall firewall show rule name="Allow WinRM HTTPS"
-$fwtest2 = netsh advfirewall firewall show rule name="Allow WinRM HTTPS" profile=any
+$fwtest2 = netsh advfirewall firewall show rule name="Allow WinRM HTTPS" profile=any remoteip=$Instance
 If ($fwtest1.count -lt 5)
 {
     Write-Verbose "Adding firewall rule to allow WinRM HTTPS."
-    netsh advfirewall firewall add rule profile=any name="Allow WinRM HTTPS" dir=in localport=5986 protocol=TCP action=allow
+    netsh advfirewall firewall add rule profile=any name="Allow WinRM HTTPS" dir=in localport=5986 protocol=TCP action=allow remoteip=$Instance
     Write-Log "Added firewall rule to allow WinRM HTTPS."
 }
 ElseIf (($fwtest1.count -ge 5) -and ($fwtest2.count -lt 5))
 {
     Write-Verbose "Updating firewall rule to allow WinRM HTTPS for any profile."
-    netsh advfirewall firewall set rule name="Allow WinRM HTTPS" new profile=any
+    netsh advfirewall firewall set rule name="Allow WinRM HTTPS" new profile=any remoteip=$Instance
     Write-Log "Updated firewall rule to allow WinRM HTTPS for any profile."
 }
 Else
